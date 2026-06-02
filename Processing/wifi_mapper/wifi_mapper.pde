@@ -639,13 +639,47 @@ void drawScanCaptures() {
       line(x - 6, y + 6, x + 6, y - 6);
     }
 
-    fill(255, 230);
-    noStroke();
-    textSize(10);
-    text(label, toScreenX(hits[0].x) + 10, toScreenY(hits[0].y) - 4);
-    text(a.rssi + "/" + b.rssi + "dBm  " + nf(a.dist, 0, 1) + "/" + nf(b.dist, 0, 1) + "m",
-         toScreenX(hits[0].x) + 10, toScreenY(hits[0].y) + 8);
+    for (int i = 0; i < hits.length; i++) {
+      drawScanHitLabel(hits[i], hits[1 - i], label, a, b, i);
+    }
   }
+}
+
+void drawScanHitLabel(PVector hit, PVector otherHit, String label, ScanObservation a, ScanObservation b, int hitIndex) {
+  float x = toScreenX(hit.x);
+  float y = toScreenY(hit.y);
+  float otherX = toScreenX(otherHit.x);
+  float otherY = toScreenY(otherHit.y);
+
+  float dx = x - otherX;
+  float dy = y - otherY;
+  float len = sqrt(dx * dx + dy * dy);
+  if (len < 0.001f) {
+    dx = (hitIndex == 0) ? 1.0f : -1.0f;
+    dy = (hitIndex == 0) ? -1.0f : 1.0f;
+    len = sqrt(2.0f);
+  }
+
+  float tx = x + (dx / len) * 14.0f;
+  float ty = y + (dy / len) * 14.0f;
+  int align = tx < x ? RIGHT : LEFT;
+
+  if (tx < 8) {
+    tx = x + 10;
+    align = LEFT;
+  } else if (tx > width - 8) {
+    tx = x - 10;
+    align = RIGHT;
+  }
+  ty = constrain(ty, 16, height - 18);
+
+  fill(255, 230);
+  noStroke();
+  textSize(10);
+  textAlign(align, BASELINE);
+  text(label + " #" + (hitIndex + 1), tx, ty);
+  text(a.rssi + "/" + b.rssi + "dBm  " + nf(a.dist, 0, 1) + "/" + nf(b.dist, 0, 1) + "m", tx, ty + 12);
+  textAlign(LEFT, BASELINE);
 }
 
 void drawScanCapture(ScanCapture capture, int col, String label) {
