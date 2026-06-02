@@ -28,7 +28,7 @@ final int   IMU_STALE_MS          = 700;
 final int   SCAN_PREDICT_MS       = 3000;
 final int   ACCEL_HOLD_MS         = 350;
 
-final float AP_DISTANCE_BLEND = 0.20f;
+final float AP_DISTANCE_BLEND = 0.2f;
 
 final float MOVE_ENTER_THRESHOLD_MS2 = 0.50f;
 final float MOVE_EXIT_THRESHOLD_MS2  = 0.25f;
