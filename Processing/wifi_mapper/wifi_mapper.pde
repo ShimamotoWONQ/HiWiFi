@@ -633,12 +633,10 @@ void drawScanCaptures() {
     for (int i = 0; i < hits.length; i++) {
       float x = toScreenX(hits[i].x);
       float y = toScreenY(hits[i].y);
-      stroke(colHit, i == 0 ? 230 : 150);
-      strokeWeight(i == 0 ? 2.0f : 1.2f);
-      noFill();
-      ellipse(x, y, i == 0 ? 16 : 12, i == 0 ? 16 : 12);
-      line(x - 6, y, x + 6, y);
-      line(x, y - 6, x, y + 6);
+      stroke(colHit, 230);
+      strokeWeight(2.0f);
+      line(x - 6, y - 6, x + 6, y + 6);
+      line(x - 6, y + 6, x + 6, y - 6);
     }
 
     fill(255, 230);
