@@ -33,15 +33,15 @@ HiWiFi/
 
 Arduino → Processing の一方向通信。
 
-### `"i"` — IMUデータ (50ms毎)
+### `"i"` — IMUデータ (10ms毎)
 ```json
 {"t":"i","t_ms":12345,"gz":0.012,"ax":-0.23,"ay":0.45,"mv":1}
 ```
 | フィールド | 単位 | 説明 |
 |---|---|---|
 | `gz` | rad/s | ヨー角速度（キャリブ済み） |
-| `ax`, `ay` | m/s² | 水平加速度（重力補正・キャリブ済み） |
-| `mv` | 0/1 | 移動判定 (水平加速度mag > 0.35 m/s²) |
+| `ax`, `ay` | m/s² | 水平加速度（起動時・静止時バイアス補正済み） |
+| `mv` | 0/1 | 移動判定（LPF済み水平加速度。enter > 0.50 m/s²、exit < 0.25 m/s²、静止候補時はSTILL固定） |
 
 ### `"scan"` — スキャン状態
 ```json
@@ -74,7 +74,11 @@ Arduino → Processing の一方向通信。
 ### Arduino
 
 - MPU-6050 初期化・キャリブレーション (200サンプル平均)
-- IMU送信 20Hz (IMU_INTERVAL_MS=50)
+- IMU送信 100Hz (IMU_INTERVAL_MS=10)
+- MOVE判定のノイズ対策
+  - 水平加速度LPF + enter/exitヒステリシス
+  - 加速度ノルムが起動時静止基準に近く、gzが小さい状態が継続したらSTILL固定
+  - 静止確認中はax/ay/gzバイアスをEMAでゆっくり再補正
 - WiFiスキャン 2秒毎 (SCAN_INTERVAL_MS=2000)、最大20AP
 - **MPU-6050 FIFO バッファリング** ★ 実装済み
   - スキャン前: `startFifo()` で25Hz ODR設定・FIFO有効化
@@ -102,10 +106,14 @@ Arduino → Processing の一方向通信。
 ### Arduino
 | 定数 | 値 | 説明 |
 |---|---|---|
-| `IMU_INTERVAL_MS` | 50 | IMU送信間隔ms |
+| `IMU_INTERVAL_MS` | 10 | IMU送信間隔ms |
 | `SCAN_INTERVAL_MS` | 2000 | WiFiスキャン間隔ms |
 | `MAX_APS_PER_SCAN` | 20 | 1スキャンで送るAP上限 |
-| `MOVE_THRESHOLD` | 0.35 | 移動判定閾値 m/s² |
+| `MOVE_ENTER_THRESHOLD` | 0.50 | MOVE入り閾値 m/s² |
+| `MOVE_EXIT_THRESHOLD` | 0.25 | STILL戻り閾値 m/s² |
+| `STATIC_ACCEL_NORM_TOL` | 0.25 | 起動時静止基準に対する加速度ノルム許容差 m/s² |
+| `STATIC_GZ_THRESHOLD_DPS` | 1.5 | 静止候補のgz閾値 deg/s |
+| `STATIC_CONFIRM_SAMPLES` | 30 | 静止確定に必要な連続サンプル数 |
 | `CALIB_SAMPLES` | 200 | キャリブレーションサンプル数 |
 | `FIFO_ODR_MS` | 40 | FIFOサンプル間隔ms (25Hz) |
 | `FIFO_MAX_SAMPLES` | 64 | FIFO最大サンプル数 |
@@ -126,7 +134,8 @@ Arduino → Processing の一方向通信。
 | `SCAN_PREDICT_MS` | 3000 | スキャン中予測継続ms |
 | `ACCEL_HOLD_MS` | 350 | 加速度保持ms |
 | `AP_DISTANCE_BLEND` | 0.20 | AP位置lerp係数 |
-| `MOVE_THRESHOLD_MS2` | 0.35 | FIFO再生時の移動判定閾値 |
+| `MOVE_ENTER_THRESHOLD_MS2` | 0.50 | FIFO再生時のMOVE入り閾値 |
+| `MOVE_EXIT_THRESHOLD_MS2` | 0.25 | FIFO再生時のSTILL戻り閾値 |
 | `FIFO_CORRECT_ALPHA` | 0.25 | FIFO補正lerp係数 |
 
 ---
@@ -141,8 +150,8 @@ Arduino → Processing の一方向通信。
 - シリアル帯域: 100Hz × ~64bytes/packet ≈ 6.4KB/s → 115200baud で余裕あり (55%)
 
 **C. 静止時ジャイロバイアス補正 ★ 実装済み**
-- `moving==0` 時に `gzBias = gzBias * 0.995f + gz * 0.005f` でEMA更新
-- τ ≈ 2s@100Hz。長時間使用でのヨードリフト抑制
+- 加速度ノルムが起動時静止基準に近く、gzが小さい状態が30サンプル継続した時だけ、`axBias` / `ayBias` / `gzBias` をEMA更新
+- 静止中のヨードリフトと、姿勢変化による水平加速度の残差をゆっくり吸収
 
 **A. PDR歩行検出 (未実装)**
 - az (垂直加速度) のピーク検出で1歩カウント

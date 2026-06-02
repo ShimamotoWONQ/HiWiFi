@@ -30,7 +30,8 @@ final int   ACCEL_HOLD_MS         = 350;
 
 final float AP_DISTANCE_BLEND = 0.20f;
 
-final float MOVE_THRESHOLD_MS2 = 0.35f;
+final float MOVE_ENTER_THRESHOLD_MS2 = 0.50f;
+final float MOVE_EXIT_THRESHOLD_MS2  = 0.25f;
 final float FIFO_CORRECT_ALPHA = 0.25f;
 
 final int   TRILATERATION_MIN_APS   = 3;
@@ -201,7 +202,11 @@ class MotionState {
   void setFifoSample(float ax, float ay, float gz) {
     lastAx = ax; lastAy = ay; lastGz = gz;
     float mag = sqrt(ax * ax + ay * ay);
-    moving = (mag > MOVE_THRESHOLD_MS2) ? 1 : 0;
+    if (moving == 0 && mag > MOVE_ENTER_THRESHOLD_MS2) {
+      moving = 1;
+    } else if (moving == 1 && mag < MOVE_EXIT_THRESHOLD_MS2) {
+      moving = 0;
+    }
     lastImuMs = millis();
   }
 

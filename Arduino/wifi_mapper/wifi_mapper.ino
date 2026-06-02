@@ -24,8 +24,15 @@
 #define ACCEL_SCALE  (1.0 / 16384.0)  // ±2g: 16384 LSB/g
 #define GRAVITY      9.80665
 
-#define MOVE_THRESHOLD 0.35
-#define CALIB_SAMPLES  200
+#define MOVE_ENTER_THRESHOLD 0.50
+#define MOVE_EXIT_THRESHOLD  0.25
+#define ACCEL_MOTION_LPF_ALPHA 0.20f
+#define STATIC_ACCEL_NORM_TOL  0.25f
+#define STATIC_GZ_THRESHOLD_DPS 1.5f
+#define STATIC_CONFIRM_SAMPLES 30
+#define ACCEL_BIAS_ALPHA       0.002f
+#define GYRO_BIAS_ALPHA        0.005f
+#define CALIB_SAMPLES          200
 
 #define IMU_INTERVAL_MS   10
 #define SCAN_INTERVAL_MS  2000
@@ -38,6 +45,10 @@
 #define FIFO_ODR_MS            40
 
 float gzBias = 0, axBias = 0, ayBias = 0;
+float accelNormRest = GRAVITY;
+float motionAxLpf = 0, motionAyLpf = 0;
+int movingState = 0;
+int staticSampleCount = 0;
 unsigned long lastImuMs   = 0;
 unsigned long lastScanMs  = 0;
 unsigned long scanStartMs = 0;
@@ -81,15 +92,21 @@ void mpuReadRaw(int16_t &ax, int16_t &ay, int16_t &az,
 
 void calibrateMPU() {
   long sumGz = 0, sumAx = 0, sumAy = 0;
+  float sumAccelNorm = 0;
   int16_t ax, ay, az, gx, gy, gz;
   for (int i = 0; i < CALIB_SAMPLES; i++) {
     mpuReadRaw(ax, ay, az, gx, gy, gz);
     sumGz += gz; sumAx += ax; sumAy += ay;
+    float axMs2 = ax * ACCEL_SCALE * GRAVITY;
+    float ayMs2 = ay * ACCEL_SCALE * GRAVITY;
+    float azMs2 = az * ACCEL_SCALE * GRAVITY;
+    sumAccelNorm += sqrt(axMs2 * axMs2 + ayMs2 * ayMs2 + azMs2 * azMs2);
     delay(5);
   }
   gzBias = sumGz / (float)CALIB_SAMPLES;
   axBias = sumAx / (float)CALIB_SAMPLES;
   ayBias = sumAy / (float)CALIB_SAMPLES;
+  accelNormRest = sumAccelNorm / (float)CALIB_SAMPLES;
 }
 
 void startFifo() {
@@ -199,11 +216,39 @@ void sendIMU() {
 
   float axMs2 = (ax - axBias) * ACCEL_SCALE * GRAVITY;
   float ayMs2 = (ay - ayBias) * ACCEL_SCALE * GRAVITY;
-  float mag   = sqrt(axMs2 * axMs2 + ayMs2 * ayMs2);
-  int moving  = (mag > MOVE_THRESHOLD) ? 1 : 0;
+  float rawAxMs2 = ax * ACCEL_SCALE * GRAVITY;
+  float rawAyMs2 = ay * ACCEL_SCALE * GRAVITY;
+  float rawAzMs2 = az * ACCEL_SCALE * GRAVITY;
+  float accelNorm = sqrt(rawAxMs2 * rawAxMs2 + rawAyMs2 * rawAyMs2 + rawAzMs2 * rawAzMs2);
+  float gzDps = (gz - gzBias) * GYRO_SCALE;
 
-  if (moving == 0) {
-    gzBias = gzBias * 0.995f + gz * 0.005f;  // EMA bias correction, τ≈2s@100Hz
+  bool staticCandidate = fabs(accelNorm - accelNormRest) < STATIC_ACCEL_NORM_TOL
+                      && fabs(gzDps) < STATIC_GZ_THRESHOLD_DPS;
+  if (staticCandidate) {
+    if (staticSampleCount < STATIC_CONFIRM_SAMPLES) staticSampleCount++;
+  } else {
+    staticSampleCount = 0;
+  }
+
+  bool confirmedStatic = staticSampleCount >= STATIC_CONFIRM_SAMPLES;
+  if (confirmedStatic) {
+    axBias = axBias * (1.0f - ACCEL_BIAS_ALPHA) + ax * ACCEL_BIAS_ALPHA;
+    ayBias = ayBias * (1.0f - ACCEL_BIAS_ALPHA) + ay * ACCEL_BIAS_ALPHA;
+    gzBias = gzBias * (1.0f - GYRO_BIAS_ALPHA) + gz * GYRO_BIAS_ALPHA;
+    axMs2 = (ax - axBias) * ACCEL_SCALE * GRAVITY;
+    ayMs2 = (ay - ayBias) * ACCEL_SCALE * GRAVITY;
+  }
+
+  motionAxLpf = motionAxLpf * (1.0f - ACCEL_MOTION_LPF_ALPHA) + axMs2 * ACCEL_MOTION_LPF_ALPHA;
+  motionAyLpf = motionAyLpf * (1.0f - ACCEL_MOTION_LPF_ALPHA) + ayMs2 * ACCEL_MOTION_LPF_ALPHA;
+  float mag = sqrt(motionAxLpf * motionAxLpf + motionAyLpf * motionAyLpf);
+
+  if (confirmedStatic) {
+    movingState = 0;
+  } else if (movingState == 0 && mag > MOVE_ENTER_THRESHOLD) {
+    movingState = 1;
+  } else if (movingState == 1 && mag < MOVE_EXIT_THRESHOLD) {
+    movingState = 0;
   }
 
   float gzRad = (gz - gzBias) * GYRO_SCALE * PI / 180.0;
@@ -214,7 +259,7 @@ void sendIMU() {
   doc["gz"]   = gzRad;
   doc["ax"]   = axMs2;
   doc["ay"]   = ayMs2;
-  doc["mv"]   = moving;
+  doc["mv"]   = movingState;
   serializeJson(doc, Serial);
   Serial.println();
   Serial.flush();
