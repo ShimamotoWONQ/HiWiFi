@@ -9,6 +9,10 @@ final String SERIAL_PORT  = "/dev/cu.usbmodem48CA435E00AC2";
 final int    BAUD          = 115200;
 final int    WIN_SIZE      = 800;
 final float  METERS_TO_PX  = 40.0f;
+final float  MIN_METERS_TO_PX = 12.0f;
+final float  MAX_METERS_TO_PX = 160.0f;
+final float  ZOOM_STEP = 1.20f;
+final float  CAMERA_PAN_SPEED = 2.0f;  // m/s in world coordinates
 final float  WALK_SPEED    = 0.8f;
 final float  MAX_RADIUS_M  = 12.0f;
 final boolean SIMULATE_INPUT = false;
@@ -93,6 +97,42 @@ class AP {
   float alpha() {
     float age = (millis() - lastSeen) / 1000.0f;
     return map(constrain(age, 0, 10), 0, 10, 255, 60);
+  }
+}
+
+class ScanObservation {
+  String ssid, bssid;
+  int rssi, channel;
+  float dist;
+
+  ScanObservation(String ssid, String bssid, int rssi, int channel) {
+    this.ssid = ssid;
+    this.bssid = bssid;
+    this.rssi = rssi;
+    this.channel = channel;
+    this.dist = rssiToDistance(rssi);
+  }
+}
+
+class ScanCapture {
+  int slot;
+  float userX, userY;
+  long capturedAt;
+  HashMap<String, ScanObservation> observations = new HashMap<String, ScanObservation>();
+
+  ScanCapture(int slot, float userX, float userY) {
+    this.slot = slot;
+    this.userX = userX;
+    this.userY = userY;
+    this.capturedAt = millis();
+  }
+
+  void add(ScanObservation obs) {
+    observations.put(obs.bssid, obs);
+  }
+
+  int count() {
+    return observations.size();
   }
 }
 
@@ -253,10 +293,18 @@ MotionState motion = new MotionState();
 ArrayList<JSONObject> pendingAps = new ArrayList<JSONObject>();
 volatile JSONObject pendingFifoBurst = null;
 
+ScanCapture scan1 = null;
+ScanCapture scan2 = null;
+boolean captureArmed = false;
+int nextCaptureSlot = 1;
+
 float cameraX = 0, cameraY = 0;
+float cameraOffsetX = 0, cameraOffsetY = 0;
+float metersToPx = METERS_TO_PX;
 long lastFrameMs = 0;
 boolean debugOverlay = true;
 long lastSimMs = 0, simStartMs = 0;
+boolean panUp = false, panDown = false, panLeft = false, panRight = false;
 
 volatile int    rawLineCount    = 0;
 volatile long   lastRawLineMs   = 0;
@@ -313,7 +361,7 @@ void parseLine(String line) {
         motion.scanActive = false;
         boolean hasPending;
         synchronized(pendingAps) { hasPending = !pendingAps.isEmpty(); }
-        if (hasPending) applyPendingAps();  // fallback: no "fb" packet
+        if (hasPending && pendingFifoBurst == null) applyPendingAps();  // fallback: no "fb" packet
       }
     } else if (type.equals("s")) {
       synchronized(pendingAps) { pendingAps.add(json); }
@@ -340,14 +388,16 @@ void draw() {
   }
 
   motion.update(dt);
+  updateCameraPan(dt);
   recordPath();
-  cameraX = motion.userX;
-  cameraY = motion.userY;
+  cameraX = motion.userX + cameraOffsetX;
+  cameraY = motion.userY + cameraOffsetY;
 
   background(0);
   drawRings();
   drawPath();
   drawAPs();
+  drawScanCaptures();
   drawUser();
   drawInfo();
 }
@@ -413,7 +463,39 @@ void applyPendingAps() {
       }
     }
   }
+  maybeCaptureScan(batch);
   tryTrilaterate();
+}
+
+void maybeCaptureScan(ArrayList<JSONObject> batch) {
+  if (!captureArmed || batch.isEmpty()) return;
+
+  ScanCapture capture = new ScanCapture(nextCaptureSlot, motion.userX, motion.userY);
+  for (JSONObject apJson : batch) {
+    JSONArray aps = apJson.getJSONArray("a");
+    if (aps == null) continue;
+    for (int i = 0; i < aps.size(); i++) {
+      JSONObject ap = aps.getJSONObject(i);
+      String bssid = ap.getString("b", "");
+      if (bssid.isEmpty()) continue;
+      String ssid = ap.getString("n", "??");
+      int rssi = ap.getInt("r");
+      int ch = ap.getInt("c");
+      capture.add(new ScanObservation(ssid, bssid, rssi, ch));
+    }
+  }
+
+  if (capture.count() == 0) return;
+
+  if (nextCaptureSlot == 1) {
+    scan1 = capture;
+    scan2 = null;
+    nextCaptureSlot = 2;
+  } else {
+    scan2 = capture;
+    nextCaptureSlot = 1;
+  }
+  captureArmed = false;
 }
 
 PVector trilaterate(ArrayList<AP> anchors) {
@@ -454,18 +536,20 @@ void tryTrilaterate() {
 }
 
 void drawRings() {
+  float cx = toScreenX(motion.userX);
+  float cy = toScreenY(motion.userY);
   noFill();
   for (float r : RINGS) {
-    float px = r * METERS_TO_PX;
+    float px = r * metersToPx;
     float alpha = map(r, 1, 10, 120, 40);
     stroke(0, 160, 0, alpha);
     strokeWeight(1);
-    ellipse(WIN_SIZE / 2, WIN_SIZE / 2, px * 2, px * 2);
+    ellipse(cx, cy, px * 2, px * 2);
 
     fill(0, 120, 0, alpha);
     noStroke();
     textSize(10);
-    text(nf(r, 0, 0) + "m", WIN_SIZE / 2 + px + 3, WIN_SIZE / 2);
+    text(nf(r, 0, 0) + "m", cx + px + 3, cy);
   }
 }
 
@@ -512,6 +596,81 @@ void drawAPs() {
       text(ap.rssi + "dBm  " + nf(dist(ap.worldX, ap.worldY, motion.userX, motion.userY), 0, 1) + "m", x + s / 2 + 3, y + 10);
     }
   }
+}
+
+void drawScanCaptures() {
+  if (scan1 == null && scan2 == null) return;
+
+  int col1 = color(0, 190, 255);
+  int col2 = color(255, 130, 0);
+  int colHit = color(255, 255, 255);
+  if (scan1 != null) drawScanCapture(scan1, col1, "P1");
+  if (scan2 != null) drawScanCapture(scan2, col2, "P2");
+
+  if (scan1 == null || scan2 == null) return;
+
+  int idx = 0;
+  for (String bssid : scan1.observations.keySet()) {
+    if (!scan2.observations.containsKey(bssid)) continue;
+
+    ScanObservation a = scan1.observations.get(bssid);
+    ScanObservation b = scan2.observations.get(bssid);
+    PVector[] hits = circleIntersections(scan1.userX, scan1.userY, a.dist,
+                                         scan2.userX, scan2.userY, b.dist);
+    String label = displaySsid(a.ssid) + " " + shortBssid(bssid);
+
+    if (hits == null) {
+      float mx = (scan1.userX + scan2.userX) * 0.5f;
+      float my = (scan1.userY + scan2.userY) * 0.5f;
+      fill(255, 80, 80, 200);
+      noStroke();
+      textSize(10);
+      text(label + " no hit", toScreenX(mx) + 8, toScreenY(my) + 12 + idx * 12);
+      idx++;
+      continue;
+    }
+
+    for (int i = 0; i < hits.length; i++) {
+      float x = toScreenX(hits[i].x);
+      float y = toScreenY(hits[i].y);
+      stroke(colHit, i == 0 ? 230 : 150);
+      strokeWeight(i == 0 ? 2.0f : 1.2f);
+      noFill();
+      ellipse(x, y, i == 0 ? 16 : 12, i == 0 ? 16 : 12);
+      line(x - 6, y, x + 6, y);
+      line(x, y - 6, x, y + 6);
+    }
+
+    fill(255, 230);
+    noStroke();
+    textSize(10);
+    text(label, toScreenX(hits[0].x) + 10, toScreenY(hits[0].y) - 4);
+    text(a.rssi + "/" + b.rssi + "dBm  " + nf(a.dist, 0, 1) + "/" + nf(b.dist, 0, 1) + "m",
+         toScreenX(hits[0].x) + 10, toScreenY(hits[0].y) + 8);
+  }
+}
+
+void drawScanCapture(ScanCapture capture, int col, String label) {
+  float cx = toScreenX(capture.userX);
+  float cy = toScreenY(capture.userY);
+
+  stroke(col, 55);
+  strokeWeight(1);
+  noFill();
+  for (ScanObservation obs : capture.observations.values()) {
+    float px = obs.dist * metersToPx;
+    ellipse(cx, cy, px * 2, px * 2);
+  }
+
+  stroke(col, 230);
+  strokeWeight(2);
+  fill(0, 210);
+  ellipse(cx, cy, 18, 18);
+  fill(col, 240);
+  noStroke();
+  ellipse(cx, cy, 8, 8);
+  textSize(11);
+  text(label + " " + capture.count() + "AP", cx + 12, cy - 8);
 }
 
 void drawUser() {
@@ -569,14 +728,16 @@ void drawInfo() {
       for (AP ap : apMap.values()) if (ap.hitCount >= TRILATERATION_MIN_HITS) anchorCount++;
     }
     text("TRIL anchors: " + anchorCount + "/" + apMap.size(), 12, 134);
+    text("CAPTURE: " + captureStatus(), 12, 148);
+    text("ZOOM: " + nf(metersToPx / METERS_TO_PX, 0, 2) + "x", 12, 162);
 
     int rawAge = (lastRawLineMs == 0) ? -1 : (int)(millis() - lastRawLineMs);
     boolean portOpen = (port != null);
     fill(portOpen ? (rawAge >= 0 && rawAge < 2000 ? color(0, 200, 255) : color(255, 160, 0)) : color(255, 80, 80), 220);
-    text("SERIAL: " + (portOpen ? "open" : "closed") + "  rx=" + rawLineCount + "  err=" + parseErrorCount + "  buf=" + bytesAvailable, 12, 152);
+    text("SERIAL: " + (portOpen ? "open" : "closed") + "  rx=" + rawLineCount + "  err=" + parseErrorCount + "  buf=" + bytesAvailable, 12, 180);
     if (rawAge >= 0) {
-      text("last rx: " + rawAge + "ms ago", 12, 166);
-      text(lastRawLine, 12, 180);
+      text("last rx: " + rawAge + "ms ago", 12, 194);
+      text(lastRawLine, 12, 208);
     }
   }
 
@@ -594,11 +755,11 @@ void drawInfo() {
 }
 
 float toScreenX(float worldX) {
-  return WIN_SIZE / 2.0f + (worldX - cameraX) * METERS_TO_PX;
+  return WIN_SIZE / 2.0f + (worldX - cameraX) * metersToPx;
 }
 
 float toScreenY(float worldY) {
-  return WIN_SIZE / 2.0f + (worldY - cameraY) * METERS_TO_PX;
+  return WIN_SIZE / 2.0f + (worldY - cameraY) * metersToPx;
 }
 
 float applyDeadband(float v) {
@@ -619,6 +780,57 @@ float normalizedDegrees(float rad) {
 // Free-space path loss: d = 10^((A - rssi) / (10*n)), A=-59dBm@1m, n=2.5
 float rssiToDistance(int rssi) {
   return pow(10.0f, (-59.0f - rssi) / 25.0f);
+}
+
+PVector[] circleIntersections(float x0, float y0, float r0, float x1, float y1, float r1) {
+  float dx = x1 - x0;
+  float dy = y1 - y0;
+  float d = sqrt(dx * dx + dy * dy);
+  if (d < 0.001f) return null;
+  if (d > r0 + r1) return null;
+  if (d < abs(r0 - r1)) return null;
+
+  float a = (r0 * r0 - r1 * r1 + d * d) / (2.0f * d);
+  float h2 = r0 * r0 - a * a;
+  if (h2 < -0.001f) return null;
+  float h = sqrt(max(0.0f, h2));
+
+  float xm = x0 + a * dx / d;
+  float ym = y0 + a * dy / d;
+  float rx = -dy * h / d;
+  float ry = dx * h / d;
+
+  return new PVector[] {
+    new PVector(xm + rx, ym + ry),
+    new PVector(xm - rx, ym - ry)
+  };
+}
+
+String shortBssid(String bssid) {
+  return bssid.length() <= 5 ? bssid : bssid.substring(bssid.length() - 5);
+}
+
+String displaySsid(String ssid) {
+  return ssid == null || ssid.isEmpty() ? "[hidden]" : ssid;
+}
+
+String captureStatus() {
+  String state = captureArmed ? ("armed P" + nextCaptureSlot) : "idle";
+  int n1 = scan1 == null ? 0 : scan1.count();
+  int n2 = scan2 == null ? 0 : scan2.count();
+  return state + "  P1=" + n1 + " P2=" + n2;
+}
+
+void updateCameraPan(float dt) {
+  float step = CAMERA_PAN_SPEED * dt;
+  if (panUp) cameraOffsetY += step;
+  if (panDown) cameraOffsetY -= step;
+  if (panLeft) cameraOffsetX += step;
+  if (panRight) cameraOffsetX -= step;
+}
+
+void zoomMap(float factor) {
+  metersToPx = constrain(metersToPx * factor, MIN_METERS_TO_PX, MAX_METERS_TO_PX);
 }
 
 void recordPath() {
@@ -652,14 +864,57 @@ void feedSimulatedData(long now) {
   }
 }
 
-// R: 姿勢リセット / C: APクリア / D: デバッグ表示
+void armNextScanCapture() {
+  if (scan1 != null && scan2 != null) {
+    scan1 = null;
+    scan2 = null;
+    nextCaptureSlot = 1;
+  } else if (scan1 != null) {
+    nextCaptureSlot = 2;
+  } else {
+    nextCaptureSlot = 1;
+  }
+  captureArmed = true;
+}
+
+// WASD: マップ移動 / <>: ズーム / R: 姿勢リセット / C: AP/2点観測クリア / G: デバッグ表示 / Space: 次スキャンを2点観測に記録
 void keyPressed() {
-  if (key == 'r' || key == 'R') {
+  if (key == 'w' || key == 'W') {
+    panUp = true;
+  } else if (key == 's' || key == 'S') {
+    panDown = true;
+  } else if (key == 'a' || key == 'A') {
+    panLeft = true;
+  } else if (key == 'd' || key == 'D') {
+    panRight = true;
+  } else if (key == 'r' || key == 'R') {
     motion.resetPose();
     path.clear();
   } else if (key == 'c' || key == 'C') {
     synchronized(apMap) { apMap.clear(); }
-  } else if (key == 'd' || key == 'D') {
+    scan1 = null;
+    scan2 = null;
+    captureArmed = false;
+    nextCaptureSlot = 1;
+  } else if (key == 'g' || key == 'G') {
     debugOverlay = !debugOverlay;
+  } else if (key == ' ') {
+    armNextScanCapture();
+  } else if (key == '<' || key == ',') {
+    zoomMap(1.0f / ZOOM_STEP);
+  } else if (key == '>' || key == '.') {
+    zoomMap(ZOOM_STEP);
+  }
+}
+
+void keyReleased() {
+  if (key == 'w' || key == 'W') {
+    panUp = false;
+  } else if (key == 's' || key == 'S') {
+    panDown = false;
+  } else if (key == 'a' || key == 'A') {
+    panLeft = false;
+  } else if (key == 'd' || key == 'D') {
+    panRight = false;
   }
 }

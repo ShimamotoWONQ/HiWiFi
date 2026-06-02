@@ -93,7 +93,7 @@ Arduino → Processing の一方向通信。
   - `applyFifoBurst()`: スナップショット巻き戻し→全FIFOサンプル再生→補正位置確定
   - 補正lerp: alpha=0.25/frame、約10フレーム(167ms)で94%収束
   - デバッグ表示: `FIFO: corr/ok`
-- キー操作: R=姿勢リセット、C=APクリア、D=デバッグ表示切替
+- キー操作: WASD=マップ移動、`<`/`>`=ズーム、Space=次スキャンを2点観測に記録、R=姿勢リセット、C=AP/2点観測クリア、G=デバッグ表示切替
 
 ---
 
@@ -113,7 +113,8 @@ Arduino → Processing の一方向通信。
 ### Processing
 | 定数 | 値 | 説明 |
 |---|---|---|
-| `METERS_TO_PX` | 40.0 | 1m = 40px |
+| `METERS_TO_PX` | 40.0 | 初期ズーム: 1m = 40px |
+| `MIN_METERS_TO_PX` / `MAX_METERS_TO_PX` | 12.0 / 160.0 | ズーム下限/上限 |
 | `WALK_SPEED` | 0.8 | 移動時基準速度 m/s |
 | `ACCEL_DEADBAND` | 0.12 | 加速度デッドバンド m/s² |
 | `ACCEL_LPF_ALPHA` | 0.25 | 加速度LPF係数 |
