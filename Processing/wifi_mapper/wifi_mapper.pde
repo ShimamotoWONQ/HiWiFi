@@ -821,10 +821,10 @@ String captureStatus() {
 
 void updateCameraPan(float dt) {
   float step = CAMERA_PAN_SPEED * dt;
-  if (panUp) cameraOffsetY += step;
-  if (panDown) cameraOffsetY -= step;
-  if (panLeft) cameraOffsetX += step;
-  if (panRight) cameraOffsetX -= step;
+  if (panUp) cameraOffsetY -= step;
+  if (panDown) cameraOffsetY += step;
+  if (panLeft) cameraOffsetX -= step;
+  if (panRight) cameraOffsetX += step;
 }
 
 void zoomMap(float factor) {
